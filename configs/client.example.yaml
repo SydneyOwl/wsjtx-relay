@@ -1,0 +1,12 @@
+data_dir: ./data
+udp_listen_addr: ":2237"
+server_url: "wss://192.168.3.221:8443"
+shared_secret: "replace-me"
+tenant_id: "replace-with-tenant-id"
+source_name: "station-a"
+source_display_name: "Station A"
+trust_store_path: ""
+auto_trust_on_first_use: true
+client_name: "wsjtx-relay-client"
+client_version: "0.1.0"
+instance_id: ""
