@@ -24,11 +24,21 @@ builds:
     mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
-      - windows
       - darwin
+      - windows
     goarch:
+      - "386"
       - amd64
+      - arm
       - arm64
+      - loong64
+      - ppc64
+      - riscv64
+    goarm:
+      - "7"
+    ignore:
+      - goos: windows
+        goarch: arm
 
   - id: wsjtx-relay-server
     main: ./cmd/wsjtx-relay-server
