@@ -10,7 +10,10 @@ import (
 	relaypb "github.com/SydneyOwl/wsjtx-relay-proto/gen/go/v20260405"
 )
 
-const ProtoVersion uint32 = 1
+const (
+	ProtoVersion     uint32 = 1
+	MaxEnvelopeBytes int64  = 1 << 20
+)
 
 func ReadEnvelope(conn *websocket.Conn, readTimeout time.Duration) (*relaypb.Envelope, error) {
 	if readTimeout > 0 {

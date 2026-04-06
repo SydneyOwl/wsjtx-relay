@@ -1,0 +1,87 @@
+version: 2
+
+project_name: wsjtx-relay
+
+before:
+  hooks:
+    - go test ./...
+
+builds:
+  - id: wsjtx-relay-client
+    main: ./cmd/wsjtx-relay-client
+    binary: wsjtx-relay-client
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/sydneyowl/wsjtx-relay/internal/shared/buildinfo.Version={{ .Version }}
+        -X github.com/sydneyowl/wsjtx-relay/internal/shared/buildinfo.Tag={{ .Tag }}
+        -X github.com/sydneyowl/wsjtx-relay/internal/shared/buildinfo.Commit={{ .FullCommit }}
+        -X github.com/sydneyowl/wsjtx-relay/internal/shared/buildinfo.Date={{ .Date }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+  - id: wsjtx-relay-server
+    main: ./cmd/wsjtx-relay-server
+    binary: wsjtx-relay-server
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/sydneyowl/wsjtx-relay/internal/shared/buildinfo.Version={{ .Version }}
+        -X github.com/sydneyowl/wsjtx-relay/internal/shared/buildinfo.Tag={{ .Tag }}
+        -X github.com/sydneyowl/wsjtx-relay/internal/shared/buildinfo.Commit={{ .FullCommit }}
+        -X github.com/sydneyowl/wsjtx-relay/internal/shared/buildinfo.Date={{ .Date }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: wsjtx-relay-client
+    ids:
+      - wsjtx-relay-client
+    name_template: "{{ .Binary }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+  - id: wsjtx-relay-server
+    ids:
+      - wsjtx-relay-server
+    name_template: "{{ .Binary }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: "checksums_{{ .Tag }}.txt"
+
+changelog:
+  use: github-native
+
+release:
+  draft: false
+  prerelease: auto

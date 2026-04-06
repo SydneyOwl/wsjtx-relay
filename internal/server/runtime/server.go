@@ -21,7 +21,10 @@ import (
 	"github.com/sydneyowl/wsjtx-relay/internal/shared/protocol"
 )
 
-const writeTimeout = 10 * time.Second
+const (
+	writeTimeout           = 10 * time.Second
+	watchOutboundQueueSize = 128
+)
 
 type Server struct {
 	cfg              config.Config
@@ -56,6 +59,8 @@ type ingestSession struct {
 type watchSession struct {
 	*sessionBase
 	selectedSource string
+	outbound       chan *relaypb.Envelope
+	outboundReady  atomic.Bool
 }
 
 type sessionBase struct {
@@ -76,14 +81,27 @@ type sessionBase struct {
 
 type sequenceWindow struct {
 	max   int
-	seen  map[uint64]struct{}
-	order []uint64
+	seen  map[sequenceKey]struct{}
+	order []sequenceKey
 }
 
 type outboundNotification struct {
 	session  *watchSession
 	envelope *relaypb.Envelope
 }
+
+type sequenceKey struct {
+	instanceID string
+	seq        uint64
+}
+
+type enqueueResult uint8
+
+const (
+	enqueueAccepted enqueueResult = iota
+	enqueueInactive
+	enqueueBackpressured
+)
 
 func NewServer(cfg config.Config) *Server {
 	return &Server{
@@ -120,7 +138,7 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request, expect
 		return
 	}
 
-	conn.SetReadLimit(2 << 20)
+	conn.SetReadLimit(protocol.MaxEnvelopeBytes)
 
 	helloEnv, err := protocol.ReadEnvelope(conn, 15*time.Second)
 	if err != nil {
@@ -236,15 +254,17 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request, expect
 		return
 	}
 
-	watch := &watchSession{sessionBase: base}
-	catalog := s.registerWatch(watch)
+	watch := &watchSession{
+		sessionBase: base,
+		outbound:    make(chan *relaypb.Envelope, watchOutboundQueueSize),
+	}
 	if err := watch.sendEnvelope(&relaypb.Envelope{
 		Body: &relaypb.Envelope_AuthResult{AuthResult: &relaypb.AuthResult{Ok: true, SessionId: watch.id}},
 	}); err != nil {
 		log.Printf("write watch auth success failed: %v", err)
-		s.unregisterWatch(watch)
 		return
 	}
+	catalog := s.registerWatch(watch)
 	if catalog != nil {
 		if err := watch.sendEnvelope(&relaypb.Envelope{Body: &relaypb.Envelope_SourceCatalog{SourceCatalog: catalog}}); err != nil {
 			log.Printf("write initial source catalog failed: %v", err)
@@ -252,6 +272,8 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request, expect
 			return
 		}
 	}
+	watch.outboundReady.Store(true)
+	go s.runWatchWriter(watch)
 	go s.monitorSession(watch.sessionBase)
 	s.runWatchLoop(watch)
 }
@@ -344,6 +366,24 @@ func (s *Server) monitorSession(session *sessionBase) {
 			}
 		case <-session.closed:
 			return
+		}
+	}
+}
+
+func (s *Server) runWatchWriter(session *watchSession) {
+	for {
+		select {
+		case <-session.closed:
+			return
+		case envelope := <-session.outbound:
+			if envelope == nil {
+				continue
+			}
+			if err := session.sendEnvelope(envelope); err != nil {
+				log.Printf("send envelope to watch session %s failed: %v", session.id, err)
+				session.close()
+				return
+			}
 		}
 	}
 }
@@ -473,7 +513,7 @@ func (s *Server) withIngestEvent(session *ingestSession, seq uint64, build func(
 		return nil
 	}
 
-	if seq != 0 && source.recentSeq.seenBefore(seq) {
+	if seq != 0 && source.recentSeq.seenBefore(session.instanceID, seq) {
 		return nil
 	}
 	source.lastSeen = time.Now().UTC()
@@ -648,8 +688,11 @@ func (s *Server) dispatch(notifications []outboundNotification) {
 		if notification.session == nil || notification.envelope == nil {
 			continue
 		}
-		if err := notification.session.sendEnvelope(notification.envelope); err != nil {
-			log.Printf("send envelope to watch session %s failed: %v", notification.session.id, err)
+		switch notification.session.enqueueEnvelope(notification.envelope) {
+		case enqueueAccepted, enqueueInactive:
+			continue
+		case enqueueBackpressured:
+			log.Printf("watch session %s outbound queue is full; closing session", notification.session.id)
 			notification.session.close()
 		}
 	}
@@ -729,15 +772,16 @@ func (s *Server) cleanupTenantLocked(tenantID string) {
 }
 
 func newSequenceWindow(max int) *sequenceWindow {
-	return &sequenceWindow{max: max, seen: make(map[uint64]struct{})}
+	return &sequenceWindow{max: max, seen: make(map[sequenceKey]struct{})}
 }
 
-func (w *sequenceWindow) seenBefore(seq uint64) bool {
-	if _, ok := w.seen[seq]; ok {
+func (w *sequenceWindow) seenBefore(instanceID string, seq uint64) bool {
+	key := sequenceKey{instanceID: instanceID, seq: seq}
+	if _, ok := w.seen[key]; ok {
 		return true
 	}
-	w.seen[seq] = struct{}{}
-	w.order = append(w.order, seq)
+	w.seen[key] = struct{}{}
+	w.order = append(w.order, key)
 	if len(w.order) > w.max {
 		oldest := w.order[0]
 		w.order = w.order[1:]
@@ -756,10 +800,17 @@ func (s *sessionBase) sendEnvelope(envelope *relaypb.Envelope) error {
 	default:
 	}
 
-	if envelope.Seq == 0 {
-		envelope.Seq = s.seq.Add(1)
+	if envelope == nil {
+		return errors.New("envelope is nil")
 	}
-	return protocol.WriteEnvelope(s.conn, proto.Clone(envelope).(*relaypb.Envelope), writeTimeout)
+	if s.conn == nil {
+		return errors.New("session connection is nil")
+	}
+	cloned := proto.Clone(envelope).(*relaypb.Envelope)
+	if cloned.Seq == 0 {
+		cloned.Seq = s.seq.Add(1)
+	}
+	return protocol.WriteEnvelope(s.conn, cloned, writeTimeout)
 }
 
 func (s *sessionBase) touch() {
@@ -773,8 +824,34 @@ func (s *sessionBase) lastIncomingTime() time.Time {
 func (s *sessionBase) close() {
 	s.closeOnce.Do(func() {
 		close(s.closed)
-		_ = s.conn.Close()
+		if s.conn != nil {
+			_ = s.conn.Close()
+		}
 	})
+}
+
+func (s *watchSession) enqueueEnvelope(envelope *relaypb.Envelope) enqueueResult {
+	if envelope == nil {
+		return enqueueAccepted
+	}
+	if s.outbound == nil || !s.outboundReady.Load() {
+		return enqueueInactive
+	}
+
+	select {
+	case <-s.closed:
+		return enqueueInactive
+	default:
+	}
+
+	select {
+	case s.outbound <- envelope:
+		return enqueueAccepted
+	case <-s.closed:
+		return enqueueInactive
+	default:
+		return enqueueBackpressured
+	}
 }
 
 func randomHex(size int) string {

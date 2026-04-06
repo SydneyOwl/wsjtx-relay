@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/pflag"
+	"github.com/sydneyowl/wsjtx-relay/internal/shared/cliargs"
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,24 +34,28 @@ func Load() (Config, error) {
 }
 
 func loadFromArgs(args []string) (Config, error) {
-	if err := rejectSingleDashLongFlags(args); err != nil {
+	if err := cliargs.RejectSingleDashLongFlags(args); err != nil {
 		return Config{}, err
 	}
 
-	cfg := defaultConfig()
-	configPath, remainingArgs, err := extractConfigPath(args)
-	if err != nil {
-		return Config{}, err
-	}
-	if configPath != "" {
-		if err := loadYAML(configPath, &cfg); err != nil {
-			return Config{}, err
-		}
-	}
+	flagValues := defaultConfig()
+	configPath := ""
 
-	fs := flag.NewFlagSet("wsjtx-relay-server", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("wsjtx-relay-server", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&configPath, "config", configPath, "YAML config file")
+	BindFlags(fs, &flagValues, &configPath)
+	if err := fs.Parse(args); err != nil {
+		return Config{}, err
+	}
+	return LoadForCLI(configPath, flagValues, fs.Changed)
+}
+
+func DefaultConfig() Config {
+	return defaultConfig()
+}
+
+func BindFlags(fs *pflag.FlagSet, cfg *Config, configPath *string) {
+	fs.StringVar(configPath, "config", strings.TrimSpace(*configPath), "YAML config file")
 	fs.StringVar(&cfg.ListenAddr, "listen-addr", cfg.ListenAddr, "HTTPS listen address")
 	fs.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "runtime data directory")
 	fs.StringVar(&cfg.CertFile, "cert-file", cfg.CertFile, "TLS certificate file path")
@@ -60,9 +65,25 @@ func loadFromArgs(args []string) (Config, error) {
 	fs.DurationVar(&cfg.HeartbeatInterval, "heartbeat-interval", cfg.HeartbeatInterval, "application heartbeat interval")
 	fs.DurationVar(&cfg.HeartbeatTimeout, "heartbeat-timeout", cfg.HeartbeatTimeout, "connection timeout without valid frames")
 	fs.DurationVar(&cfg.MaxTimestampSkew, "max-timestamp-skew", cfg.MaxTimestampSkew, "maximum tolerated auth timestamp skew")
-	if err := fs.Parse(remainingArgs); err != nil {
-		return Config{}, err
+}
+
+func LoadForCLI(configPath string, flagValues Config, flagChanged func(string) bool) (Config, error) {
+	cfg := defaultConfig()
+	if trimmedPath := strings.TrimSpace(configPath); trimmedPath != "" {
+		if err := loadYAML(trimmedPath, &cfg); err != nil {
+			return Config{}, err
+		}
 	}
+
+	applyStringOverride(flagChanged, "listen-addr", flagValues.ListenAddr, &cfg.ListenAddr)
+	applyStringOverride(flagChanged, "data-dir", flagValues.DataDir, &cfg.DataDir)
+	applyStringOverride(flagChanged, "cert-file", flagValues.CertFile, &cfg.CertFile)
+	applyStringOverride(flagChanged, "key-file", flagValues.KeyFile, &cfg.KeyFile)
+	applyStringOverride(flagChanged, "shared-secret", flagValues.SharedSecret, &cfg.SharedSecret)
+	applyStringOverride(flagChanged, "shared-secret-file", flagValues.SharedSecretFile, &cfg.SharedSecretFile)
+	applyDurationOverride(flagChanged, "heartbeat-interval", flagValues.HeartbeatInterval, &cfg.HeartbeatInterval)
+	applyDurationOverride(flagChanged, "heartbeat-timeout", flagValues.HeartbeatTimeout, &cfg.HeartbeatTimeout)
+	applyDurationOverride(flagChanged, "max-timestamp-skew", flagValues.MaxTimestampSkew, &cfg.MaxTimestampSkew)
 
 	if err := normalizeAndValidate(&cfg); err != nil {
 		return Config{}, err
@@ -125,42 +146,6 @@ func normalizeAndValidate(cfg *Config) error {
 	return nil
 }
 
-func rejectSingleDashLongFlags(args []string) error {
-	for _, arg := range args {
-		if arg == "--" {
-			return nil
-		}
-		if strings.HasPrefix(arg, "--") || !strings.HasPrefix(arg, "-") || arg == "-" {
-			continue
-		}
-		return fmt.Errorf("use GNU-style long flags with two dashes, for example --%s instead of %s", strings.TrimPrefix(arg, "-"), arg)
-	}
-	return nil
-}
-
-func extractConfigPath(args []string) (string, []string, error) {
-	remaining := make([]string, 0, len(args))
-	configPath := ""
-
-	for index := 0; index < len(args); index++ {
-		arg := args[index]
-		switch {
-		case arg == "--config":
-			if index+1 >= len(args) {
-				return "", nil, errors.New("--config requires a file path")
-			}
-			configPath = args[index+1]
-			index++
-		case strings.HasPrefix(arg, "--config="):
-			configPath = strings.TrimPrefix(arg, "--config=")
-		default:
-			remaining = append(remaining, arg)
-		}
-	}
-
-	return strings.TrimSpace(configPath), remaining, nil
-}
-
 func loadYAML(path string, target any) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -212,4 +197,16 @@ func randomSecret() (string, error) {
 		return "", fmt.Errorf("generate shared secret: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
+func applyStringOverride(flagChanged func(string) bool, name, value string, target *string) {
+	if flagChanged != nil && flagChanged(name) {
+		*target = value
+	}
+}
+
+func applyDurationOverride(flagChanged func(string) bool, name string, value time.Duration, target *time.Duration) {
+	if flagChanged != nil && flagChanged(name) {
+		*target = value
+	}
 }

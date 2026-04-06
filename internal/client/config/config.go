@@ -3,13 +3,15 @@ package config
 import (
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/spf13/pflag"
+	"github.com/sydneyowl/wsjtx-relay/internal/shared/buildinfo"
+	"github.com/sydneyowl/wsjtx-relay/internal/shared/cliargs"
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,24 +35,28 @@ func Load() (Config, error) {
 }
 
 func loadFromArgs(args []string) (Config, error) {
-	if err := rejectSingleDashLongFlags(args); err != nil {
+	if err := cliargs.RejectSingleDashLongFlags(args); err != nil {
 		return Config{}, err
 	}
 
-	cfg := defaultConfig()
-	configPath, remainingArgs, err := extractConfigPath(args)
-	if err != nil {
-		return Config{}, err
-	}
-	if configPath != "" {
-		if err := loadYAML(configPath, &cfg); err != nil {
-			return Config{}, err
-		}
-	}
+	flagValues := defaultConfig()
+	configPath := ""
 
-	fs := flag.NewFlagSet("wsjtx-relay-client", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("wsjtx-relay-client", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&configPath, "config", configPath, "YAML config file")
+	BindFlags(fs, &flagValues, &configPath)
+	if err := fs.Parse(args); err != nil {
+		return Config{}, err
+	}
+	return LoadForCLI(configPath, flagValues, fs.Changed)
+}
+
+func DefaultConfig() Config {
+	return defaultConfig()
+}
+
+func BindFlags(fs *pflag.FlagSet, cfg *Config, configPath *string) {
+	fs.StringVar(configPath, "config", strings.TrimSpace(*configPath), "YAML config file")
 	fs.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "runtime data directory")
 	fs.StringVar(&cfg.UDPListenAddr, "udp-listen-addr", cfg.UDPListenAddr, "UDP listen address for WSJT-X/JTDX")
 	fs.StringVar(&cfg.ServerURL, "server-url", cfg.ServerURL, "relay server websocket base URL, e.g. wss://example.com:8443")
@@ -63,9 +69,28 @@ func loadFromArgs(args []string) (Config, error) {
 	fs.StringVar(&cfg.ClientName, "client-name", cfg.ClientName, "client name sent in the hello message")
 	fs.StringVar(&cfg.ClientVersion, "client-version", cfg.ClientVersion, "client version sent in the hello message")
 	fs.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "optional stable instance identifier for process restarts")
-	if err := fs.Parse(remainingArgs); err != nil {
-		return Config{}, err
+}
+
+func LoadForCLI(configPath string, flagValues Config, flagChanged func(string) bool) (Config, error) {
+	cfg := defaultConfig()
+	if trimmedPath := strings.TrimSpace(configPath); trimmedPath != "" {
+		if err := loadYAML(trimmedPath, &cfg); err != nil {
+			return Config{}, err
+		}
 	}
+
+	applyStringOverride(flagChanged, "data-dir", flagValues.DataDir, &cfg.DataDir)
+	applyStringOverride(flagChanged, "udp-listen-addr", flagValues.UDPListenAddr, &cfg.UDPListenAddr)
+	applyStringOverride(flagChanged, "server-url", flagValues.ServerURL, &cfg.ServerURL)
+	applyStringOverride(flagChanged, "shared-secret", flagValues.SharedSecret, &cfg.SharedSecret)
+	applyStringOverride(flagChanged, "tenant-id", flagValues.TenantID, &cfg.TenantID)
+	applyStringOverride(flagChanged, "source-name", flagValues.SourceName, &cfg.SourceName)
+	applyStringOverride(flagChanged, "source-display-name", flagValues.SourceDisplayName, &cfg.SourceDisplayName)
+	applyStringOverride(flagChanged, "trust-store-path", flagValues.TrustStorePath, &cfg.TrustStorePath)
+	applyBoolOverride(flagChanged, "auto-trust-on-first-use", flagValues.AutoTrustOnFirstUse, &cfg.AutoTrustOnFirstUse)
+	applyStringOverride(flagChanged, "client-name", flagValues.ClientName, &cfg.ClientName)
+	applyStringOverride(flagChanged, "client-version", flagValues.ClientVersion, &cfg.ClientVersion)
+	applyStringOverride(flagChanged, "instance-id", flagValues.InstanceID, &cfg.InstanceID)
 
 	if err := normalizeAndValidate(&cfg); err != nil {
 		return Config{}, err
@@ -79,7 +104,7 @@ func defaultConfig() Config {
 		UDPListenAddr:       ":2237",
 		AutoTrustOnFirstUse: true,
 		ClientName:          "wsjtx-relay-client",
-		ClientVersion:       "0.1.0",
+		ClientVersion:       buildinfo.ReleaseVersion(),
 	}
 }
 
@@ -113,7 +138,7 @@ func normalizeAndValidate(cfg *Config) error {
 		cfg.ClientName = "wsjtx-relay-client"
 	}
 	if cfg.ClientVersion == "" {
-		cfg.ClientVersion = "0.1.0"
+		cfg.ClientVersion = buildinfo.ReleaseVersion()
 	}
 	if cfg.UDPListenAddr == "" {
 		cfg.UDPListenAddr = ":2237"
@@ -132,42 +157,6 @@ func normalizeAndValidate(cfg *Config) error {
 	return nil
 }
 
-func rejectSingleDashLongFlags(args []string) error {
-	for _, arg := range args {
-		if arg == "--" {
-			return nil
-		}
-		if strings.HasPrefix(arg, "--") || !strings.HasPrefix(arg, "-") || arg == "-" {
-			continue
-		}
-		return fmt.Errorf("use GNU-style long flags with two dashes, for example --%s instead of %s", strings.TrimPrefix(arg, "-"), arg)
-	}
-	return nil
-}
-
-func extractConfigPath(args []string) (string, []string, error) {
-	remaining := make([]string, 0, len(args))
-	configPath := ""
-
-	for index := 0; index < len(args); index++ {
-		arg := args[index]
-		switch {
-		case arg == "--config":
-			if index+1 >= len(args) {
-				return "", nil, errors.New("--config requires a file path")
-			}
-			configPath = args[index+1]
-			index++
-		case strings.HasPrefix(arg, "--config="):
-			configPath = strings.TrimPrefix(arg, "--config=")
-		default:
-			remaining = append(remaining, arg)
-		}
-	}
-
-	return strings.TrimSpace(configPath), remaining, nil
-}
-
 func loadYAML(path string, target any) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -180,4 +169,16 @@ func loadYAML(path string, target any) error {
 		return fmt.Errorf("decode config file %q: %w", path, err)
 	}
 	return nil
+}
+
+func applyStringOverride(flagChanged func(string) bool, name, value string, target *string) {
+	if flagChanged != nil && flagChanged(name) {
+		*target = value
+	}
+}
+
+func applyBoolOverride(flagChanged func(string) bool, name string, value bool, target *bool) {
+	if flagChanged != nil && flagChanged(name) {
+		*target = value
+	}
 }

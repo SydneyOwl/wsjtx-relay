@@ -114,7 +114,7 @@ func (c *Client) connect(ctx context.Context) (*connectionState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial websocket: %w", err)
 	}
-	conn.SetReadLimit(2 << 20)
+	conn.SetReadLimit(protocol.MaxEnvelopeBytes)
 
 	state := &connectionState{conn: conn}
 	state.touch()
