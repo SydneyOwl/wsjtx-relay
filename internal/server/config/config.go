@@ -17,6 +17,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	envConfigPath        = "WSJTX_RELAY_SERVER_CONFIG"
+	envListenAddr        = "WSJTX_RELAY_SERVER_LISTEN_ADDR"
+	envDataDir           = "WSJTX_RELAY_SERVER_DATA_DIR"
+	envCertFile          = "WSJTX_RELAY_SERVER_CERT_FILE"
+	envKeyFile           = "WSJTX_RELAY_SERVER_KEY_FILE"
+	envSharedSecret      = "WSJTX_RELAY_SERVER_SHARED_SECRET"
+	envSharedSecretFile  = "WSJTX_RELAY_SERVER_SHARED_SECRET_FILE"
+	envHeartbeatInterval = "WSJTX_RELAY_SERVER_HEARTBEAT_INTERVAL"
+	envHeartbeatTimeout  = "WSJTX_RELAY_SERVER_HEARTBEAT_TIMEOUT"
+	envMaxTimestampSkew  = "WSJTX_RELAY_SERVER_MAX_TIMESTAMP_SKEW"
+)
+
 type Config struct {
 	ListenAddr        string        `yaml:"listen_addr"`
 	DataDir           string        `yaml:"data_dir"`
@@ -69,10 +82,13 @@ func BindFlags(fs *pflag.FlagSet, cfg *Config, configPath *string) {
 
 func LoadForCLI(configPath string, flagValues Config, flagChanged func(string) bool) (Config, error) {
 	cfg := defaultConfig()
-	if trimmedPath := strings.TrimSpace(configPath); trimmedPath != "" {
+	if trimmedPath := resolveConfigPath(configPath); trimmedPath != "" {
 		if err := loadYAML(trimmedPath, &cfg); err != nil {
 			return Config{}, err
 		}
+	}
+	if err := applyEnvOverrides(&cfg); err != nil {
+		return Config{}, err
 	}
 
 	applyStringOverride(flagChanged, "listen-addr", flagValues.ListenAddr, &cfg.ListenAddr)
@@ -209,4 +225,51 @@ func applyDurationOverride(flagChanged func(string) bool, name string, value tim
 	if flagChanged != nil && flagChanged(name) {
 		*target = value
 	}
+}
+
+func resolveConfigPath(configPath string) string {
+	if trimmedPath := strings.TrimSpace(configPath); trimmedPath != "" {
+		return trimmedPath
+	}
+	return strings.TrimSpace(os.Getenv(envConfigPath))
+}
+
+func applyEnvOverrides(cfg *Config) error {
+	applyEnvString(envListenAddr, &cfg.ListenAddr)
+	applyEnvString(envDataDir, &cfg.DataDir)
+	applyEnvString(envCertFile, &cfg.CertFile)
+	applyEnvString(envKeyFile, &cfg.KeyFile)
+	applyEnvString(envSharedSecret, &cfg.SharedSecret)
+	applyEnvString(envSharedSecretFile, &cfg.SharedSecretFile)
+
+	if err := applyEnvDuration(envHeartbeatInterval, &cfg.HeartbeatInterval); err != nil {
+		return err
+	}
+	if err := applyEnvDuration(envHeartbeatTimeout, &cfg.HeartbeatTimeout); err != nil {
+		return err
+	}
+	if err := applyEnvDuration(envMaxTimestampSkew, &cfg.MaxTimestampSkew); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyEnvString(name string, target *string) {
+	if value, ok := os.LookupEnv(name); ok {
+		*target = value
+	}
+}
+
+func applyEnvDuration(name string, target *time.Duration) error {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+
+	parsed, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", name, err)
+	}
+	*target = parsed
+	return nil
 }

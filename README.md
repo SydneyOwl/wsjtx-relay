@@ -157,6 +157,49 @@ You can omit:
   - optional stable client instance identifier
   - useful if you want a process restart to replace the previous session cleanly
 
+## Environment Variables
+
+Both binaries now support this precedence order:
+
+1. built-in defaults
+2. YAML config file
+3. environment variables
+4. CLI flags
+
+This makes the project easier to run in Docker without mounting YAML files.
+
+### Server environment variables
+
+- `WSJTX_RELAY_SERVER_CONFIG`
+- `WSJTX_RELAY_SERVER_LISTEN_ADDR`
+- `WSJTX_RELAY_SERVER_DATA_DIR`
+- `WSJTX_RELAY_SERVER_CERT_FILE`
+- `WSJTX_RELAY_SERVER_KEY_FILE`
+- `WSJTX_RELAY_SERVER_SHARED_SECRET`
+- `WSJTX_RELAY_SERVER_SHARED_SECRET_FILE`
+- `WSJTX_RELAY_SERVER_HEARTBEAT_INTERVAL`
+- `WSJTX_RELAY_SERVER_HEARTBEAT_TIMEOUT`
+- `WSJTX_RELAY_SERVER_MAX_TIMESTAMP_SKEW`
+
+### Client environment variables
+
+- `WSJTX_RELAY_CLIENT_CONFIG`
+- `WSJTX_RELAY_CLIENT_DATA_DIR`
+- `WSJTX_RELAY_CLIENT_UDP_LISTEN_ADDR`
+- `WSJTX_RELAY_CLIENT_SERVER_URL`
+- `WSJTX_RELAY_CLIENT_SHARED_SECRET`
+- `WSJTX_RELAY_CLIENT_TENANT_ID`
+- `WSJTX_RELAY_CLIENT_SOURCE_NAME`
+- `WSJTX_RELAY_CLIENT_SOURCE_DISPLAY_NAME`
+- `WSJTX_RELAY_CLIENT_TRUST_STORE_PATH`
+- `WSJTX_RELAY_CLIENT_AUTO_TRUST_ON_FIRST_USE`
+- `WSJTX_RELAY_CLIENT_CLIENT_NAME`
+- `WSJTX_RELAY_CLIENT_CLIENT_VERSION`
+- `WSJTX_RELAY_CLIENT_INSTANCE_ID`
+
+Duration values use Go duration syntax such as `10s`, `30s`, or `2m`.
+Boolean values accept standard Go forms such as `true` / `false`.
+
 ## WsjtxWatcher Configuration
 
 To use this relay with `WsjtxWatcher`, open the app settings and select `Third-party data source`, then configure:
@@ -213,6 +256,90 @@ go run ./cmd/wsjtx-relay-client --config ./configs/client.example.yaml
 - Save settings.
 - Start the watcher service from the main screen.
 - Open `Select source` and choose the desired relay source.
+
+## Docker
+
+The repository now includes:
+
+- `Dockerfile`
+  - multi-stage build with `server` and `client` targets
+- `.env.example`
+  - starter environment variables for `docker run --env-file`
+
+### Run the server with `docker run`
+
+1. Build the server image:
+
+```powershell
+docker build --target server -t wsjtx-relay-server .
+```
+
+2. Create a server env file such as `server.env`:
+
+```dotenv
+WSJTX_RELAY_SERVER_LISTEN_ADDR=:8443
+WSJTX_RELAY_SERVER_DATA_DIR=/data
+WSJTX_RELAY_SERVER_SHARED_SECRET=replace-with-a-long-random-secret
+```
+
+3. Start the container:
+
+```powershell
+docker run -d `
+  --name wsjtx-relay-server `
+  -p 8443:8443 `
+  -v ${PWD}/docker-data/server:/data `
+  --env-file server.env `
+  wsjtx-relay-server
+```
+
+The server persists its generated certificate and runtime files under the mounted `/data` directory.
+
+### Run the client with `docker run`
+
+1. Build the client image:
+
+```powershell
+docker build --target client -t wsjtx-relay-client .
+```
+
+2. Create a client env file such as `client.env`:
+
+```dotenv
+WSJTX_RELAY_CLIENT_DATA_DIR=/data
+WSJTX_RELAY_CLIENT_UDP_LISTEN_ADDR=:2237
+WSJTX_RELAY_CLIENT_SERVER_URL=wss://your-server-host:8443
+WSJTX_RELAY_CLIENT_SHARED_SECRET=replace-with-a-long-random-secret
+WSJTX_RELAY_CLIENT_TENANT_ID=replace-with-a-long-random-tenant-id
+WSJTX_RELAY_CLIENT_SOURCE_NAME=station-a
+WSJTX_RELAY_CLIENT_SOURCE_DISPLAY_NAME=Station A
+WSJTX_RELAY_CLIENT_AUTO_TRUST_ON_FIRST_USE=true
+```
+
+3. Start the container:
+
+```powershell
+docker run -d `
+  --name wsjtx-relay-client `
+  -p 2237:2237/udp `
+  -v ${PWD}/docker-data/client:/data `
+  --env-file client.env `
+  wsjtx-relay-client
+```
+
+Notes:
+
+- Point WSJT-X or JTDX UDP output to the Docker host on port `2237/udp`.
+- The client persists its trusted server fingerprint under the mounted `/data` directory.
+- The client uses TOFU, so the first successful connection will trust the server certificate automatically when `WSJTX_RELAY_CLIENT_AUTO_TRUST_ON_FIRST_USE=true`.
+- If you want to run both containers on the same Docker network, set `WSJTX_RELAY_CLIENT_SERVER_URL` to the server container name, for example `wss://wsjtx-relay-server:8443`, and add `--network your-network` to both `docker run` commands.
+
+### Build individual images
+
+```powershell
+docker build --target server -t wsjtx-relay-server .
+docker build --target client -t wsjtx-relay-client .
+```
 
 ## Commands
 

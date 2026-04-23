@@ -50,3 +50,37 @@ func TestLoadFromArgsRejectsSingleDashLongFlags(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestLoadForCLIEnvOverridesYAML(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "client.yaml")
+	configYAML := "" +
+		"data_dir: " + tempDir + "\n" +
+		"udp_listen_addr: ':2237'\n" +
+		"server_url: 'wss://example.test:8443'\n" +
+		"shared_secret: 'yaml-secret'\n" +
+		"tenant_id: 'tenant-from-yaml'\n" +
+		"source_name: 'source-from-yaml'\n" +
+		"auto_trust_on_first_use: true\n"
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv(envTenantID, "tenant-from-env")
+	t.Setenv(envAutoTrustOnFirstUse, "false")
+
+	cfg, err := LoadForCLI(configPath, DefaultConfig(), func(string) bool { return false })
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.TenantID != "tenant-from-env" {
+		t.Fatalf("tenant env override failed: got %q", cfg.TenantID)
+	}
+	if cfg.AutoTrustOnFirstUse {
+		t.Fatal("auto trust env override failed: expected false")
+	}
+	if cfg.SourceName != "source-from-yaml" {
+		t.Fatalf("source name should remain from YAML: got %q", cfg.SourceName)
+	}
+}

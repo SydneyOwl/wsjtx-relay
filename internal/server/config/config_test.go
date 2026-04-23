@@ -46,3 +46,36 @@ func TestLoadFromArgsRejectsSingleDashLongFlags(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestLoadForCLIEnvOverridesYAML(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "server.yaml")
+	configYAML := "" +
+		"data_dir: " + tempDir + "\n" +
+		"listen_addr: ':8443'\n" +
+		"shared_secret: 'yaml-secret'\n" +
+		"heartbeat_interval: 10s\n" +
+		"heartbeat_timeout: 30s\n" +
+		"max_timestamp_skew: 90s\n"
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv(envListenAddr, ":10443")
+	t.Setenv(envHeartbeatTimeout, "45s")
+
+	cfg, err := LoadForCLI(configPath, DefaultConfig(), func(string) bool { return false })
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.ListenAddr != ":10443" {
+		t.Fatalf("listen addr env override failed: got %q", cfg.ListenAddr)
+	}
+	if cfg.HeartbeatTimeout.Seconds() != 45 {
+		t.Fatalf("heartbeat timeout env override failed: got %s", cfg.HeartbeatTimeout)
+	}
+	if cfg.SharedSecret != "yaml-secret" {
+		t.Fatalf("shared secret should remain from YAML: got %q", cfg.SharedSecret)
+	}
+}
