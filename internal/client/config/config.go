@@ -7,12 +7,29 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/pflag"
 	"github.com/sydneyowl/wsjtx-relay/internal/shared/buildinfo"
 	"github.com/sydneyowl/wsjtx-relay/internal/shared/cliargs"
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	envConfigPath          = "WSJTX_RELAY_CLIENT_CONFIG"
+	envDataDir             = "WSJTX_RELAY_CLIENT_DATA_DIR"
+	envUDPListenAddr       = "WSJTX_RELAY_CLIENT_UDP_LISTEN_ADDR"
+	envServerURL           = "WSJTX_RELAY_CLIENT_SERVER_URL"
+	envSharedSecret        = "WSJTX_RELAY_CLIENT_SHARED_SECRET"
+	envTenantID            = "WSJTX_RELAY_CLIENT_TENANT_ID"
+	envSourceName          = "WSJTX_RELAY_CLIENT_SOURCE_NAME"
+	envSourceDisplayName   = "WSJTX_RELAY_CLIENT_SOURCE_DISPLAY_NAME"
+	envTrustStorePath      = "WSJTX_RELAY_CLIENT_TRUST_STORE_PATH"
+	envAutoTrustOnFirstUse = "WSJTX_RELAY_CLIENT_AUTO_TRUST_ON_FIRST_USE"
+	envClientName          = "WSJTX_RELAY_CLIENT_CLIENT_NAME"
+	envClientVersion       = "WSJTX_RELAY_CLIENT_CLIENT_VERSION"
+	envInstanceID          = "WSJTX_RELAY_CLIENT_INSTANCE_ID"
 )
 
 type Config struct {
@@ -73,10 +90,13 @@ func BindFlags(fs *pflag.FlagSet, cfg *Config, configPath *string) {
 
 func LoadForCLI(configPath string, flagValues Config, flagChanged func(string) bool) (Config, error) {
 	cfg := defaultConfig()
-	if trimmedPath := strings.TrimSpace(configPath); trimmedPath != "" {
+	if trimmedPath := resolveConfigPath(configPath); trimmedPath != "" {
 		if err := loadYAML(trimmedPath, &cfg); err != nil {
 			return Config{}, err
 		}
+	}
+	if err := applyEnvOverrides(&cfg); err != nil {
+		return Config{}, err
 	}
 
 	applyStringOverride(flagChanged, "data-dir", flagValues.DataDir, &cfg.DataDir)
@@ -181,4 +201,50 @@ func applyBoolOverride(flagChanged func(string) bool, name string, value bool, t
 	if flagChanged != nil && flagChanged(name) {
 		*target = value
 	}
+}
+
+func resolveConfigPath(configPath string) string {
+	if trimmedPath := strings.TrimSpace(configPath); trimmedPath != "" {
+		return trimmedPath
+	}
+	return strings.TrimSpace(os.Getenv(envConfigPath))
+}
+
+func applyEnvOverrides(cfg *Config) error {
+	applyEnvString(envDataDir, &cfg.DataDir)
+	applyEnvString(envUDPListenAddr, &cfg.UDPListenAddr)
+	applyEnvString(envServerURL, &cfg.ServerURL)
+	applyEnvString(envSharedSecret, &cfg.SharedSecret)
+	applyEnvString(envTenantID, &cfg.TenantID)
+	applyEnvString(envSourceName, &cfg.SourceName)
+	applyEnvString(envSourceDisplayName, &cfg.SourceDisplayName)
+	applyEnvString(envTrustStorePath, &cfg.TrustStorePath)
+	applyEnvString(envClientName, &cfg.ClientName)
+	applyEnvString(envClientVersion, &cfg.ClientVersion)
+	applyEnvString(envInstanceID, &cfg.InstanceID)
+
+	if err := applyEnvBool(envAutoTrustOnFirstUse, &cfg.AutoTrustOnFirstUse); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyEnvString(name string, target *string) {
+	if value, ok := os.LookupEnv(name); ok {
+		*target = value
+	}
+}
+
+func applyEnvBool(name string, target *bool) error {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+
+	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", name, err)
+	}
+	*target = parsed
+	return nil
 }
