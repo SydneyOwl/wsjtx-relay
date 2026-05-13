@@ -74,7 +74,7 @@ func (c *Client) Run(ctx context.Context) error {
 		if err != nil {
 			wait := backoffSchedule[min(attempt, len(backoffSchedule)-1)]
 			attempt++
-			log.Printf("relay connect failed: %v; retrying in %s", err, wait)
+			log.Printf("[WARN] relay connect failed: %v; retrying in %s", err, wait)
 			select {
 			case <-ctx.Done():
 				return nil
@@ -86,11 +86,11 @@ func (c *Client) Run(ctx context.Context) error {
 		attempt = 0
 		liveEvents := make(chan *relaypb.Envelope, relayEventQueueSize)
 		dispatcher.activate(liveEvents)
-		log.Printf("relay ingest connected to %s as %s/%s", c.cfg.ServerURL, c.cfg.TenantID, c.cfg.SourceName)
+		log.Printf("[INFO] relay ingest connected to %s as %s/%s", c.cfg.ServerURL, c.cfg.TenantID, c.cfg.SourceName)
 		err = c.runConnected(ctx, state, liveEvents)
 		dispatcher.deactivate(liveEvents)
 		if err != nil && ctx.Err() == nil {
-			log.Printf("relay connection dropped: %v", err)
+			log.Printf("[WARN] relay connection dropped: %v", err)
 		}
 	}
 }
@@ -230,11 +230,11 @@ func (c *Client) readLoop(state *connectionState, readErrCh chan<- error) {
 			}
 		case *relaypb.Envelope_Pong:
 		case *relaypb.Envelope_ServerNotice:
-			log.Printf("server notice [%s/%s]: %s", body.ServerNotice.Level, body.ServerNotice.Code, body.ServerNotice.Message)
+			log.Printf("[SERVER_NOTICE] [%s/%s] %s", body.ServerNotice.Level, body.ServerNotice.Code, body.ServerNotice.Message)
 		case *relaypb.Envelope_SourceState:
-			log.Printf("unexpected source_state for ingest: %s", body.SourceState.SourceName)
+			log.Printf("[WARN] unexpected source_state for ingest: %s", body.SourceState.SourceName)
 		default:
-			log.Printf("unexpected server frame for ingest: %T", body)
+			log.Printf("[WARN] unexpected server frame for ingest: %T", body)
 		}
 	}
 }
@@ -272,7 +272,7 @@ func (c *Client) startWsjtxListener(ctx context.Context, dispatcher *liveEventDi
 				if err == nil || ctx.Err() != nil {
 					continue
 				}
-				log.Printf("wsjtx listener error: %v", err)
+				log.Printf("[ERROR] wsjtx listener error: %v", err)
 			case message, ok := <-msgCh:
 				if !ok {
 					return
@@ -283,13 +283,13 @@ func (c *Client) startWsjtxListener(ctx context.Context, dispatcher *liveEventDi
 				}
 				delivered, connected := dispatcher.publish(envelope)
 				if connected && !delivered {
-					log.Printf("wsjtx event dropped because relay output queue is full")
+					log.Printf("[WARN] wsjtx event dropped because relay output queue is full")
 				}
 			}
 		}
 	}()
 
-	log.Printf("listening for WSJT-X UDP on %s", server.LocalAddr())
+	log.Printf("[INFO] listening for WSJT-X UDP on %s", server.LocalAddr())
 	return nil
 }
 

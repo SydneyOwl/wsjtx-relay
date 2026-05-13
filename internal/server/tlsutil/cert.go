@@ -3,42 +3,57 @@ package tlsutil
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
-func EnsureCertificate(certFile string, keyFile string) (tls.Certificate, error) {
+func EnsureCertificate(certFile string, keyFile string) (tls.Certificate, bool, error) {
 	if fileExists(certFile) && fileExists(keyFile) {
 		certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
-			return tls.Certificate{}, fmt.Errorf("load TLS certificate: %w", err)
+			return tls.Certificate{}, false, fmt.Errorf("load TLS certificate: %w", err)
 		}
-		return certificate, nil
+		return certificate, false, nil
 	}
 
 	certificatePEM, privateKeyPEM, err := generateSelfSignedCertificate()
 	if err != nil {
-		return tls.Certificate{}, err
+		return tls.Certificate{}, false, err
 	}
 	if err := os.WriteFile(certFile, certificatePEM, 0o600); err != nil {
-		return tls.Certificate{}, fmt.Errorf("write TLS certificate: %w", err)
+		return tls.Certificate{}, false, fmt.Errorf("write TLS certificate: %w", err)
 	}
 	if err := os.WriteFile(keyFile, privateKeyPEM, 0o600); err != nil {
-		return tls.Certificate{}, fmt.Errorf("write TLS key: %w", err)
+		return tls.Certificate{}, false, fmt.Errorf("write TLS key: %w", err)
 	}
 
 	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("load generated TLS certificate: %w", err)
+		return tls.Certificate{}, false, fmt.Errorf("load generated TLS certificate: %w", err)
 	}
-	return certificate, nil
+	return certificate, true, nil
+}
+
+func SPKIFingerprint(cert tls.Certificate) string {
+	if len(cert.Certificate) == 0 {
+		return ""
+	}
+	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(x509Cert.RawSubjectPublicKeyInfo)
+	return strings.ToUpper(hex.EncodeToString(sum[:]))
 }
 
 func generateSelfSignedCertificate() ([]byte, []byte, error) {

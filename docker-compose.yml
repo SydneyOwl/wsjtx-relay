@@ -1,0 +1,11 @@
+services:
+  wsjtx-relay-server:
+    image: sydneymrcat/wsjtx-relay-server
+    container_name: wsjtx-relay-server
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./server.yaml:/etc/wsjtx-relay/server.yaml:ro
+      - ./data:/data
+    command: ["--config", "/etc/wsjtx-relay/server.yaml", "--data-dir", "/data"]

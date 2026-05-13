@@ -2,11 +2,10 @@ package config
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +22,7 @@ type Config struct {
 	CertFile          string        `yaml:"cert_file"`
 	KeyFile           string        `yaml:"key_file"`
 	SharedSecret      string        `yaml:"shared_secret"`
-	SharedSecretFile  string        `yaml:"shared_secret_file"`
+	Public            bool          `yaml:"public"`
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
 	HeartbeatTimeout  time.Duration `yaml:"heartbeat_timeout"`
 	MaxTimestampSkew  time.Duration `yaml:"max_timestamp_skew"`
@@ -61,10 +60,10 @@ func BindFlags(fs *pflag.FlagSet, cfg *Config, configPath *string) {
 	fs.StringVar(&cfg.CertFile, "cert-file", cfg.CertFile, "TLS certificate file path")
 	fs.StringVar(&cfg.KeyFile, "key-file", cfg.KeyFile, "TLS private key file path")
 	fs.StringVar(&cfg.SharedSecret, "shared-secret", cfg.SharedSecret, "shared secret for relay authentication")
-	fs.StringVar(&cfg.SharedSecretFile, "shared-secret-file", cfg.SharedSecretFile, "path to persisted shared secret")
 	fs.DurationVar(&cfg.HeartbeatInterval, "heartbeat-interval", cfg.HeartbeatInterval, "application heartbeat interval")
 	fs.DurationVar(&cfg.HeartbeatTimeout, "heartbeat-timeout", cfg.HeartbeatTimeout, "connection timeout without valid frames")
 	fs.DurationVar(&cfg.MaxTimestampSkew, "max-timestamp-skew", cfg.MaxTimestampSkew, "maximum tolerated auth timestamp skew")
+	fs.BoolVar(&cfg.Public, "public", cfg.Public, "disable shared secret authentication (open relay mode)")
 }
 
 func LoadForCLI(configPath string, flagValues Config, flagChanged func(string) bool) (Config, error) {
@@ -80,10 +79,10 @@ func LoadForCLI(configPath string, flagValues Config, flagChanged func(string) b
 	applyStringOverride(flagChanged, "cert-file", flagValues.CertFile, &cfg.CertFile)
 	applyStringOverride(flagChanged, "key-file", flagValues.KeyFile, &cfg.KeyFile)
 	applyStringOverride(flagChanged, "shared-secret", flagValues.SharedSecret, &cfg.SharedSecret)
-	applyStringOverride(flagChanged, "shared-secret-file", flagValues.SharedSecretFile, &cfg.SharedSecretFile)
 	applyDurationOverride(flagChanged, "heartbeat-interval", flagValues.HeartbeatInterval, &cfg.HeartbeatInterval)
 	applyDurationOverride(flagChanged, "heartbeat-timeout", flagValues.HeartbeatTimeout, &cfg.HeartbeatTimeout)
 	applyDurationOverride(flagChanged, "max-timestamp-skew", flagValues.MaxTimestampSkew, &cfg.MaxTimestampSkew)
+	applyBoolOverride(flagChanged, "public", flagValues.Public, &cfg.Public)
 
 	if err := normalizeAndValidate(&cfg); err != nil {
 		return Config{}, err
@@ -107,7 +106,6 @@ func normalizeAndValidate(cfg *Config) error {
 	cfg.CertFile = strings.TrimSpace(cfg.CertFile)
 	cfg.KeyFile = strings.TrimSpace(cfg.KeyFile)
 	cfg.SharedSecret = strings.TrimSpace(cfg.SharedSecret)
-	cfg.SharedSecretFile = strings.TrimSpace(cfg.SharedSecretFile)
 
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":8443"
@@ -134,15 +132,16 @@ func normalizeAndValidate(cfg *Config) error {
 	if cfg.KeyFile == "" {
 		cfg.KeyFile = filepath.Join(cfg.DataDir, "tls.key")
 	}
-	if cfg.SharedSecretFile == "" {
-		cfg.SharedSecretFile = filepath.Join(cfg.DataDir, "shared_secret.txt")
+	if cfg.Public {
+		if cfg.SharedSecret != "" {
+			log.Println("[WARN] shared_secret is set but will be ignored in public mode")
+		}
+		cfg.SharedSecret = ""
+	} else {
+		if cfg.SharedSecret == "" {
+			return errors.New("shared_secret is required: set it in the config file or via --shared-secret")
+		}
 	}
-
-	secret, err := resolveSharedSecret(cfg.SharedSecret, cfg.SharedSecretFile)
-	if err != nil {
-		return err
-	}
-	cfg.SharedSecret = secret
 	return nil
 }
 
@@ -160,45 +159,6 @@ func loadYAML(path string, target any) error {
 	return nil
 }
 
-func resolveSharedSecret(secret, secretFile string) (string, error) {
-	if strings.TrimSpace(secret) != "" {
-		normalized := strings.TrimSpace(secret)
-		if err := os.WriteFile(secretFile, []byte(normalized+"\n"), 0o600); err != nil {
-			return "", fmt.Errorf("persist shared secret: %w", err)
-		}
-		return normalized, nil
-	}
-
-	data, err := os.ReadFile(secretFile)
-	if err == nil {
-		normalized := strings.TrimSpace(string(data))
-		if normalized == "" {
-			return "", errors.New("shared secret file is empty")
-		}
-		return normalized, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("read shared secret file: %w", err)
-	}
-
-	generated, err := randomSecret()
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(secretFile, []byte(generated+"\n"), 0o600); err != nil {
-		return "", fmt.Errorf("persist generated shared secret: %w", err)
-	}
-	return generated, nil
-}
-
-func randomSecret() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("generate shared secret: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(bytes), nil
-}
-
 func applyStringOverride(flagChanged func(string) bool, name, value string, target *string) {
 	if flagChanged != nil && flagChanged(name) {
 		*target = value
@@ -206,6 +166,12 @@ func applyStringOverride(flagChanged func(string) bool, name, value string, targ
 }
 
 func applyDurationOverride(flagChanged func(string) bool, name string, value time.Duration, target *time.Duration) {
+	if flagChanged != nil && flagChanged(name) {
+		*target = value
+	}
+}
+
+func applyBoolOverride(flagChanged func(string) bool, name string, value bool, target *bool) {
 	if flagChanged != nil && flagChanged(name) {
 		*target = value
 	}
