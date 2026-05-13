@@ -14,6 +14,6 @@ func main() {
 	defer cancel()
 
 	if err := cli.Execute(ctx, nil); err != nil {
-		log.Fatalf("%v", err)
+		log.Fatalf("[FATAL] %v", err)
 	}
 }

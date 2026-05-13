@@ -74,9 +74,12 @@ func newVersionCmd(binaryName string) *cobra.Command {
 }
 
 func runServer(cfg config.Config) error {
-	certificate, err := tlsutil.EnsureCertificate(cfg.CertFile, cfg.KeyFile)
+	certificate, generated, err := tlsutil.EnsureCertificate(cfg.CertFile, cfg.KeyFile)
 	if err != nil {
 		return fmt.Errorf("prepare TLS certificate: %w", err)
+	}
+	if generated {
+		log.Printf("[INFO] generated new self-signed TLS certificate (SPKI fingerprint: %s)", tlsutil.SPKIFingerprint(certificate))
 	}
 
 	relayServer := runtime.NewServer(cfg)
@@ -89,8 +92,10 @@ func runServer(cfg config.Config) error {
 		},
 	}
 
-	log.Printf("wsjtx-relay-server listening on https://%s", cfg.ListenAddr)
-	log.Printf("shared secret loaded from %s", cfg.SharedSecretFile)
+	log.Printf("[INFO] wsjtx-relay-server listening on https://%s", cfg.ListenAddr)
+	if cfg.Public {
+		log.Printf("[WARN] running in public mode (authentication disabled)")
+	}
 	if err := httpServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("relay server stopped with error: %w", err)
 	}

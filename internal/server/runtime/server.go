@@ -134,7 +134,7 @@ func (s *Server) Routes() http.Handler {
 func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request, expectedRole string) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("upgrade %s connection failed: %v", expectedRole, err)
+		log.Printf("[ERROR] upgrade %s connection failed: %v", expectedRole, err)
 		return
 	}
 
@@ -142,7 +142,7 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request, expect
 
 	helloEnv, err := protocol.ReadEnvelope(conn, 15*time.Second)
 	if err != nil {
-		log.Printf("read client hello failed: %v", err)
+		log.Printf("[ERROR] read client hello failed: %v", err)
 		_ = conn.Close()
 		return
 	}
@@ -181,14 +181,14 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request, expect
 			},
 		},
 	}, writeTimeout); err != nil {
-		log.Printf("write server hello failed: %v", err)
+		log.Printf("[ERROR] write server hello failed: %v", err)
 		_ = conn.Close()
 		return
 	}
 
 	authEnv, err := protocol.ReadEnvelope(conn, 15*time.Second)
 	if err != nil {
-		log.Printf("read auth request failed: %v", err)
+		log.Printf("[ERROR] read auth request failed: %v", err)
 		_ = conn.Close()
 		return
 	}
@@ -198,23 +198,25 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request, expect
 		return
 	}
 
-	validation := auth.ValidateProof(
-		s.cfg.SharedSecret,
-		nonce,
-		hello.Role,
-		hello.TenantId,
-		hello.SourceName,
-		hello.InstanceId,
-		authRequest.TimestampUnix,
-		authRequest.Proof,
-		s.cfg.MaxTimestampSkew)
-	if !validation.Valid {
-		if validation.TimestampSkew {
-			s.writeHandshakeError(conn, "timestamp_skew", "auth timestamp outside tolerated skew")
-		} else {
-			s.writeHandshakeError(conn, "auth_failed", "authentication failed")
+	if !s.cfg.Public {
+		validation := auth.ValidateProof(
+			s.cfg.SharedSecret,
+			nonce,
+			hello.Role,
+			hello.TenantId,
+			hello.SourceName,
+			hello.InstanceId,
+			authRequest.TimestampUnix,
+			authRequest.Proof,
+			s.cfg.MaxTimestampSkew)
+		if !validation.Valid {
+			if validation.TimestampSkew {
+				s.writeHandshakeError(conn, "timestamp_skew", "auth timestamp outside tolerated skew")
+			} else {
+				s.writeHandshakeError(conn, "auth_failed", "authentication failed")
+			}
+			return
 		}
-		return
 	}
 
 	base := &sessionBase{
@@ -245,7 +247,7 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request, expect
 		if err := ingest.sendEnvelope(&relaypb.Envelope{
 			Body: &relaypb.Envelope_AuthResult{AuthResult: &relaypb.AuthResult{Ok: true, SessionId: ingest.id}},
 		}); err != nil {
-			log.Printf("write ingest auth success failed: %v", err)
+			log.Printf("[ERROR] write ingest auth success failed: %v", err)
 			s.unregisterIngest(ingest, false)
 			return
 		}
@@ -261,13 +263,13 @@ func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request, expect
 	if err := watch.sendEnvelope(&relaypb.Envelope{
 		Body: &relaypb.Envelope_AuthResult{AuthResult: &relaypb.AuthResult{Ok: true, SessionId: watch.id}},
 	}); err != nil {
-		log.Printf("write watch auth success failed: %v", err)
+		log.Printf("[ERROR] write watch auth success failed: %v", err)
 		return
 	}
 	catalog := s.registerWatch(watch)
 	if catalog != nil {
 		if err := watch.sendEnvelope(&relaypb.Envelope{Body: &relaypb.Envelope_SourceCatalog{SourceCatalog: catalog}}); err != nil {
-			log.Printf("write initial source catalog failed: %v", err)
+			log.Printf("[ERROR] write initial source catalog failed: %v", err)
 			s.unregisterWatch(watch)
 			return
 		}
@@ -295,7 +297,7 @@ func (s *Server) runIngestLoop(session *ingestSession) {
 		envelope, err := protocol.ReadEnvelope(session.conn, 0)
 		if err != nil {
 			if !errors.Is(err, websocket.ErrCloseSent) {
-				log.Printf("ingest session %s closed: %v", session.id, err)
+				log.Printf("[WARN] ingest session %s closed: %v", session.id, err)
 			}
 			return
 		}
@@ -329,7 +331,7 @@ func (s *Server) runWatchLoop(session *watchSession) {
 		envelope, err := protocol.ReadEnvelope(session.conn, 0)
 		if err != nil {
 			if !errors.Is(err, websocket.ErrCloseSent) {
-				log.Printf("watch session %s closed: %v", session.id, err)
+				log.Printf("[WARN] watch session %s closed: %v", session.id, err)
 			}
 			return
 		}
@@ -356,7 +358,7 @@ func (s *Server) monitorSession(session *sessionBase) {
 		select {
 		case <-ticker.C:
 			if time.Since(session.lastIncomingTime()) > session.heartbeatTimeout {
-				log.Printf("session %s timed out", session.id)
+				log.Printf("[WARN] session %s timed out", session.id)
 				session.close()
 				return
 			}
@@ -380,7 +382,7 @@ func (s *Server) runWatchWriter(session *watchSession) {
 				continue
 			}
 			if err := session.sendEnvelope(envelope); err != nil {
-				log.Printf("send envelope to watch session %s failed: %v", session.id, err)
+				log.Printf("[ERROR] send envelope to watch session %s failed: %v", session.id, err)
 				session.close()
 				return
 			}
@@ -692,7 +694,7 @@ func (s *Server) dispatch(notifications []outboundNotification) {
 		case enqueueAccepted, enqueueInactive:
 			continue
 		case enqueueBackpressured:
-			log.Printf("watch session %s outbound queue is full; closing session", notification.session.id)
+			log.Printf("[WARN] watch session %s outbound queue is full; closing session", notification.session.id)
 			notification.session.close()
 		}
 	}

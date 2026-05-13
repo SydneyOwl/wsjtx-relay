@@ -50,8 +50,14 @@ The relay is live-state oriented. It does not provide historical decode replay.
 - The server can auto-generate and persist a self-signed certificate.
 - Clients use TOFU trust by storing the server SPKI fingerprint on first successful connection.
 - Authentication uses a shared secret plus a time-bounded HMAC proof.
-- Tenant isolation is based on `tenant_id`.
+- Tenant separation is based on a high-entropy shared `tenant_id` plus the shared secret.
+- The current design does not maintain a separate server-side secret per tenant.
 - Relay frame size is currently limited to `1 MiB`.
+
+Important security notes:
+
+- `tenant_id` should be treated as a private high-entropy identifier, not a friendly room name.
+- `public: true` disables authentication entirely and should only be used on trusted networks or for testing.
 
 ## Server Configuration
 
@@ -60,6 +66,7 @@ The example server config is in `configs/server.example.yaml`:
 ```yaml
 listen_addr: "0.0.0.0:8443"
 data_dir: ./data
+shared_secret: "replace-with-a-strong-secret"
 heartbeat_interval: 10s
 heartbeat_timeout: 30s
 max_timestamp_skew: 90s
@@ -70,7 +77,11 @@ Important server settings:
 - `listen_addr`
   - HTTPS / WebSocket listen address
 - `data_dir`
-  - storage location for generated TLS files and generated shared secret
+  - storage location for generated TLS files
+- `shared_secret`
+  - shared secret for relay authentication (required unless `public: true`)
+- `public`
+  - set to `true` to disable authentication (open relay mode)
 - `heartbeat_interval`
   - ping interval sent to connected clients
 - `heartbeat_timeout`
@@ -84,33 +95,23 @@ Optional server settings supported by the binary:
   - existing TLS certificate file
 - `key_file`
   - existing TLS private key file
-- `shared_secret`
-  - explicit shared secret value
-- `shared_secret_file`
-  - path to a persisted shared secret
 
 Behavior notes:
 
-- If no certificate is configured, the server generates one and stores it under `data_dir`.
-- If no shared secret is configured, the server generates one and stores it under `data_dir/shared_secret.txt`.
+- If no certificate is configured, the server generates one and logs its SPKI fingerprint.
+- When `public: true`, `shared_secret` is not required and authentication is skipped.
+- `public: true` means anyone who can reach the server can connect as either `ingest` or `watch`.
 
 ## Client Configuration
 
 The example client config is in `configs/client.example.yaml`:
 
 ```yaml
-data_dir: ./data
 udp_listen_addr: ":2237"
-server_url: "wss://192.168.3.221:8443"
+server_url: "wss://example.com:8443"
 shared_secret: "replace-me"
-tenant_id: "replace-with-tenant-id"
+tenant_id: "replace-with-a-random-shared-id"
 source_name: "station-a"
-source_display_name: "Station A"
-trust_store_path: "./data/trusted_server_fingerprint.txt"
-auto_trust_on_first_use: true
-client_name: "wsjtx-relay-client"
-client_version: "0.1.0"
-instance_id: ""
 ```
 
 ### Minimal required client settings
@@ -127,8 +128,16 @@ source_name: "station-a"
 
 You can omit:
 
+- `data_dir`
+  - if omitted, the client uses `./data`
 - `trust_store_path`
   - if omitted, the client stores the trusted fingerprint under `data_dir/trusted_server_fingerprint.txt`
+- `auto_trust_on_first_use`
+  - if omitted, it defaults to `true`
+- `client_name`
+  - if omitted, it defaults to `wsjtx-relay-client`
+- `client_version`
+  - if omitted, it defaults to the build version
 - `instance_id`
   - if omitted, the client generates a fresh random instance ID on startup
 
@@ -142,8 +151,8 @@ You can omit:
 - `shared_secret`
   - must match the server-side shared secret
 - `tenant_id`
-  - a shared private ID that both the relay client and the watcher must use
-  - think of it as a private room name plus secret routing key
+  - a shared private high-entropy tenant identifier that both the relay client and the watcher must use
+  - it participates in authentication and tenant routing, so treat it as secret configuration
   - use a long random value, not a human-friendly name like `home`, `test`, or `station1`
 - `source_name`
   - logical source identifier inside the tenant
@@ -166,8 +175,8 @@ To use this relay with `WsjtxWatcher`, open the app settings and select `Third-p
 - `Shared Secret`
   - same secret used by the relay client and server
 - `Tenant ID`
-  - the same shared private ID used by the relay client
-  - this is what tells the watcher which private relay space to join
+  - the same shared private high-entropy ID used by the relay client
+  - this identifies the tenant namespace and also participates in authentication
 - `Select source`
   - choose which relay source the app should watch
 - `Refresh source list`
@@ -185,7 +194,9 @@ On the first successful connection, `WsjtxWatcher` stores the observed server fi
 go run ./cmd/wsjtx-relay-server --config ./configs/server.example.yaml
 ```
 
-If you did not set `shared_secret`, check the generated value in `data/shared_secret.txt`.
+Make sure to set a strong `shared_secret` in the config file. Use `--public` if you want to skip authentication.
+
+Do not expose `public: true` on the open internet unless you intentionally want an unauthenticated open relay.
 
 ### 2. Configure and start the relay client on the station machine
 
@@ -194,7 +205,14 @@ If you did not set `shared_secret`, check the generated value in `data/shared_se
 - Copy the same `shared_secret`.
 - Choose a long random `tenant_id`.
   - A simple way is to generate a random hex, base32, or base64url string and use the same value on both sides.
+  - Treat it as private configuration, not as a display name.
 - Set a unique `source_name`.
+
+Recommended operational notes:
+
+- Keep `shared_secret` and `tenant_id` out of screenshots, issue trackers, and chat logs.
+- If either value is exposed, rotate both values for that tenant setup.
+- Prefer running behind a firewall, Tailscale, WireGuard, or a reverse proxy with connection controls if you expose the service remotely.
 
 Then start the client:
 

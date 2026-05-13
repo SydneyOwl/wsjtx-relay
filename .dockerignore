@@ -1,0 +1,14 @@
+.git
+.github
+.idea
+.vscode
+.claude
+
+data/
+*.md
+*.drawio
+
+.goreleaser.yml
+docker-compose.yml
+Dockerfile
+.dockerignore
