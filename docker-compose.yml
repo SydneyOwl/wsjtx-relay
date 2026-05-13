@@ -1,7 +1,6 @@
 services:
   wsjtx-relay-server:
-    build: .
-    image: wsjtx-relay-server:latest
+    image: sydneymrcat/wsjtx-relay-server
     container_name: wsjtx-relay-server
     restart: unless-stopped
     ports:

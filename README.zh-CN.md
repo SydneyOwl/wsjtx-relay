@@ -183,6 +183,77 @@ source_name: "station-a"
 
 首次成功连接后，`WsjtxWatcher` 会自动保存观察到的服务端指纹。
 
+## Docker 部署
+
+仓库已经包含服务端用的 `Dockerfile` 和 `docker-compose.yml` 示例。
+
+### 直接运行镜像
+
+先准备一个服务端配置文件，例如 `./server.yaml`：
+
+```yaml
+listen_addr: "0.0.0.0:8443"
+data_dir: /data
+shared_secret: "replace-with-a-strong-secret"
+heartbeat_interval: 10s
+heartbeat_timeout: 30s
+max_timestamp_skew: 90s
+```
+
+然后启动容器：
+
+```bash
+docker run -d \
+  --name wsjtx-relay-server \
+  --restart unless-stopped \
+  -p 8443:8443 \
+  -v "$(pwd)/server.yaml:/etc/wsjtx-relay/server.yaml:ro" \
+  -v "$(pwd)/data:/data" \
+  sydneymrcat/wsjtx-relay-server \
+  --config /etc/wsjtx-relay/server.yaml \
+  --data-dir /data
+```
+
+说明：
+
+- 建议把 `/data` 挂载到宿主机持久化目录，避免容器重启后丢失自动生成的 TLS 文件
+- 配置中的 `listen_addr` 应设置为 `0.0.0.0:8443`，这样容器内服务才能正常对外监听
+- 如果使用自签名证书，客户端首次成功连接后会按现有 TOFU 逻辑保存服务端指纹
+
+### 使用 Docker Compose
+
+仓库内置的 `docker-compose.yml` 就是按这个思路组织的：挂载一个配置文件，再挂载一个持久化数据目录。
+
+示例：
+
+```yaml
+services:
+  wsjtx-relay-server:
+    image: sydneymrcat/wsjtx-relay-server
+    container_name: wsjtx-relay-server
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./server.yaml:/etc/wsjtx-relay/server.yaml:ro
+      - ./data:/data
+    command: ["--config", "/etc/wsjtx-relay/server.yaml", "--data-dir", "/data"]
+```
+
+启动命令：
+
+```bash
+docker compose up -d
+```
+
+### 本地构建镜像
+
+如果你想自己构建服务端镜像，而不是直接使用已发布镜像：
+
+```bash
+docker build -t wsjtx-relay-server:local .
+```
+
 ## 快速开始
 
 ### 1. 启动服务端

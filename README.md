@@ -186,6 +186,77 @@ To use this relay with `WsjtxWatcher`, open the app settings and select `Third-p
 
 On the first successful connection, `WsjtxWatcher` stores the observed server fingerprint automatically.
 
+## Docker
+
+The repository includes a server-side `Dockerfile` and a `docker-compose.yml` example.
+
+### Run the server image directly
+
+Prepare a server config first, for example `./server.yaml`:
+
+```yaml
+listen_addr: "0.0.0.0:8443"
+data_dir: /data
+shared_secret: "replace-with-a-strong-secret"
+heartbeat_interval: 10s
+heartbeat_timeout: 30s
+max_timestamp_skew: 90s
+```
+
+Then start the container:
+
+```bash
+docker run -d \
+  --name wsjtx-relay-server \
+  --restart unless-stopped \
+  -p 8443:8443 \
+  -v "$(pwd)/server.yaml:/etc/wsjtx-relay/server.yaml:ro" \
+  -v "$(pwd)/data:/data" \
+  sydneymrcat/wsjtx-relay-server \
+  --config /etc/wsjtx-relay/server.yaml \
+  --data-dir /data
+```
+
+Notes:
+
+- mount a persistent `/data` directory so generated TLS files survive container restarts
+- set `listen_addr` to `0.0.0.0:8443` in the config so the server listens on the container interface
+- if you use a self-signed certificate, the first successful client connection will store its fingerprint through the existing TOFU flow
+
+### Run with Docker Compose
+
+The bundled `docker-compose.yml` follows the same layout: one mounted config file plus one persistent data directory.
+
+Example:
+
+```yaml
+services:
+  wsjtx-relay-server:
+    image: sydneymrcat/wsjtx-relay-server
+    container_name: wsjtx-relay-server
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./server.yaml:/etc/wsjtx-relay/server.yaml:ro
+      - ./data:/data
+    command: ["--config", "/etc/wsjtx-relay/server.yaml", "--data-dir", "/data"]
+```
+
+Start it with:
+
+```bash
+docker compose up -d
+```
+
+### Build locally
+
+If you want to build the server image yourself instead of using the published image:
+
+```bash
+docker build -t wsjtx-relay-server:local .
+```
+
 ## Quick Start
 
 ### 1. Start the relay server
